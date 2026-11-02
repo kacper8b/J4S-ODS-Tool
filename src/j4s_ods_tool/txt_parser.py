@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 import re
 
@@ -6,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_DIR = PROJECT_ROOT / "workspace"
 INPUT_DIR = WORKSPACE_DIR / "input"
 OUTPUT_DIR = WORKSPACE_DIR / "output"
+REJECTED_DIR = WORKSPACE_DIR / "rejected"
 
 VALID_SYMBOLS = {"S", "R", "E", "N", "X", "Y"}
 SYMBOL_PRIORITY = {
@@ -31,6 +33,7 @@ class ProcessingResult:
 def ensure_directories() -> None:
     INPUT_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    REJECTED_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def sanitize_filename(name: str) -> str:
@@ -43,12 +46,27 @@ def is_hex4(value: str) -> bool:
     return bool(re.fullmatch(r"[0-9A-Fa-f]{4}", value))
 
 
+def is_e_symbol(token: str) -> bool:
+    return token == "E" or (
+        re.fullmatch(r"E[0-9A-Fa-f]+", token) is not None
+        and int(token[1:], 16) <= 0xFFFF
+    )
+
+
 def fix_stuck_symbols(line: str) -> str:
     previous = None
 
     while previous != line:
         previous = line
-        line = re.sub(r"([0-9A-Fa-f]{4})([SRNEXY])\b", r"\1 \2", line)
+        line = re.sub(
+            r"\bE[0-9A-Fa-f]+\b|([0-9A-Fa-f]{4})([SRNEXY])\b",
+            lambda match: (
+                f"{match.group(1)} {match.group(2)}"
+                if match.group(1) is not None
+                else match.group(0)
+            ),
+            line,
+        )
 
     return line
 
@@ -59,16 +77,28 @@ def parse_line(line: str) -> tuple[str, str, str, str, str, str, str] | None:
     if len(tokens) < 4:
         return None
 
-    first_four = tokens[:4]
+    first_four = [token[:4] for token in tokens[:4]]
 
     if not all(is_hex4(token) for token in first_four):
         return None
 
     value = ""
     symbols = []
+    extra_tokens = tokens[4:]
+    has_e_symbol = any(is_e_symbol(token) for token in extra_tokens)
 
-    for token in tokens[4:]:
-        if is_hex4(token):
+    for token in extra_tokens:
+        value_with_suffix = re.fullmatch(
+            r"([0-9A-Fa-f]{4})([^0-9A-Fa-f].*)", token
+        )
+
+        if is_e_symbol(token):
+            symbols.append("E")
+        elif has_e_symbol and value_with_suffix:
+            if value:
+                return None
+            value = value_with_suffix.group(1)
+        elif is_hex4(token):
             if value:
                 return None
             value = token
@@ -100,6 +130,7 @@ def process_file(
     output_name: str | None = None,
     *,
     output_dir: Path = OUTPUT_DIR,
+    rejected_dir: Path = REJECTED_DIR,
 ) -> ProcessingResult:
     valid_rows = []
     rejected_rows = []
@@ -131,7 +162,8 @@ def process_file(
 
     rejected_path = None
     if rejected_rows:
-        rejected_path = output_dir / f"{base_name}_rejected.txt"
+        rejected_dir.mkdir(parents=True, exist_ok=True)
+        rejected_path = rejected_dir / f"{base_name}_rejected.txt"
         rejected_path.write_text("\n".join(rejected_rows), encoding="utf-8")
 
     result = ProcessingResult(
@@ -187,6 +219,20 @@ def ask_naming_mode() -> tuple[int, str, str]:
     return 3, "", ""
 
 
+def ask_include_date() -> bool:
+    print("\nAdd current date to output filenames?")
+    print("1 - Yes")
+    print("2 - No")
+
+    while True:
+        choice = input("\nDate choice: ").strip()
+        if choice == "1":
+            return True
+        if choice == "2":
+            return False
+        print("Choose 1 or 2.")
+
+
 def choose_file(files: list[Path], prompt: str) -> Path | None:
     print(f"\n{prompt}\n")
     for index, file_path in enumerate(files, start=1):
@@ -229,6 +275,7 @@ def build_output_name(
     base_name: str,
     prefix: str,
     index: int,
+    current_date: str | None = None,
 ) -> str:
     if naming_mode == 1:
         name = f"{base_name}_{index:03d}"
@@ -239,7 +286,8 @@ def build_output_name(
 
     relative_parent = file_path.parent.relative_to(input_dir)
     folder_prefix = sanitize_filename("_".join(relative_parent.parts))
-    return f"{folder_prefix}_{name}" if folder_prefix else name
+    name = f"{folder_prefix}_{name}" if folder_prefix else name
+    return f"{name}_{current_date}" if current_date else name
 
 
 def process_files(
@@ -250,15 +298,26 @@ def process_files(
     prefix: str,
     *,
     output_dir: Path | None = None,
+    rejected_dir: Path | None = None,
+    include_date: bool = False,
 ) -> list[ProcessingResult]:
     if output_dir is None:
         output_dir = OUTPUT_DIR
+    if rejected_dir is None:
+        rejected_dir = REJECTED_DIR
 
     results = []
     used_names = set()
+    current_date = date.today().isoformat() if include_date else None
     for index, file_path in enumerate(files, start=1):
         output_name = build_output_name(
-            file_path, input_dir, naming_mode, base_name, prefix, index
+            file_path,
+            input_dir,
+            naming_mode,
+            base_name,
+            prefix,
+            index,
+            current_date,
         )
         unique_name = output_name
         suffix = 2
@@ -266,7 +325,14 @@ def process_files(
             unique_name = f"{output_name}_{suffix:03d}"
             suffix += 1
         used_names.add(unique_name.casefold())
-        results.append(process_file(file_path, unique_name, output_dir=output_dir))
+        results.append(
+            process_file(
+                file_path,
+                unique_name,
+                output_dir=output_dir,
+                rejected_dir=rejected_dir,
+            )
+        )
     return results
 
 
@@ -321,7 +387,15 @@ def main() -> None:
 
     if selected_files:
         naming_mode, base_name, prefix = ask_naming_mode()
-        process_files(selected_files, INPUT_DIR, naming_mode, base_name, prefix)
+        include_date = ask_include_date()
+        process_files(
+            selected_files,
+            INPUT_DIR,
+            naming_mode,
+            base_name,
+            prefix,
+            include_date=include_date,
+        )
 
     input("\nPress ENTER to exit...")
 
