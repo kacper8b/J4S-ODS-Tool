@@ -131,6 +131,7 @@ def process_file(
     *,
     output_dir: Path = OUTPUT_DIR,
     rejected_dir: Path = REJECTED_DIR,
+    rejected_name: str | None = None,
 ) -> ProcessingResult:
     valid_rows = []
     rejected_rows = []
@@ -157,18 +158,19 @@ def process_file(
 
     base_name = output_name if output_name else file_path.stem
     output_dir.mkdir(parents=True, exist_ok=True)
-    processed_path = output_dir / f"{base_name}_processed.txt"
-    processed_path.write_text("\n".join(valid_rows), encoding="utf-8")
+    cleaned_path = output_dir / f"{base_name}_cleaned.txt"
+    cleaned_path.write_text("\n".join(valid_rows), encoding="utf-8")
 
     rejected_path = None
     if rejected_rows:
         rejected_dir.mkdir(parents=True, exist_ok=True)
-        rejected_path = rejected_dir / f"{base_name}_rejected.txt"
+        rejected_base_name = rejected_name if rejected_name else base_name
+        rejected_path = rejected_dir / f"{rejected_base_name}_rejected.txt"
         rejected_path.write_text("\n".join(rejected_rows), encoding="utf-8")
 
     result = ProcessingResult(
         input_path=file_path,
-        output_path=processed_path,
+        output_path=cleaned_path,
         rejected_path=rejected_path,
         valid_count=len(valid_rows),
         rejected_count=len(rejected_rows),
@@ -184,7 +186,7 @@ def print_result(result: ProcessingResult) -> None:
     print(f"Valid records      : {result.valid_count}")
     print(f"Rejected records   : {result.rejected_count}")
     print(f"Repaired symbols   : {result.fixed_symbol_count}")
-    print(f"Output             : {result.output_path.name}")
+    print(f"Output             : {result.output_path}")
     if result.rejected_path is not None:
         print(f"Rejected           : {result.rejected_path.name}")
     else:
@@ -270,7 +272,6 @@ def choose_folder(folders: list[Path]) -> Path | None:
 
 def build_output_name(
     file_path: Path,
-    input_dir: Path,
     naming_mode: int,
     base_name: str,
     prefix: str,
@@ -284,9 +285,6 @@ def build_output_name(
     else:
         name = file_path.stem
 
-    relative_parent = file_path.parent.relative_to(input_dir)
-    folder_prefix = sanitize_filename("_".join(relative_parent.parts))
-    name = f"{folder_prefix}_{name}" if folder_prefix else name
     return f"{name}_{current_date}" if current_date else name
 
 
@@ -308,11 +306,12 @@ def process_files(
 
     results = []
     used_names = set()
+    used_rejected_names = set()
     current_date = date.today().isoformat() if include_date else None
     for index, file_path in enumerate(files, start=1):
+        relative_parent = file_path.parent.relative_to(input_dir)
         output_name = build_output_name(
             file_path,
-            input_dir,
             naming_mode,
             base_name,
             prefix,
@@ -321,16 +320,31 @@ def process_files(
         )
         unique_name = output_name
         suffix = 2
-        while unique_name.casefold() in used_names:
+        output_key = str(relative_parent / unique_name).casefold()
+        while output_key in used_names:
             unique_name = f"{output_name}_{suffix:03d}"
+            output_key = str(relative_parent / unique_name).casefold()
             suffix += 1
-        used_names.add(unique_name.casefold())
+        used_names.add(output_key)
+
+        folder_prefix = sanitize_filename("_".join(relative_parent.parts))
+        rejected_name = (
+            f"{folder_prefix}_{output_name}" if folder_prefix else output_name
+        )
+        unique_rejected_name = rejected_name
+        suffix = 2
+        while unique_rejected_name.casefold() in used_rejected_names:
+            unique_rejected_name = f"{rejected_name}_{suffix:03d}"
+            suffix += 1
+        used_rejected_names.add(unique_rejected_name.casefold())
+
         results.append(
             process_file(
                 file_path,
                 unique_name,
-                output_dir=output_dir,
+                output_dir=output_dir / relative_parent,
                 rejected_dir=rejected_dir,
+                rejected_name=unique_rejected_name,
             )
         )
     return results

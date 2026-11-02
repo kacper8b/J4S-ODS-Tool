@@ -100,7 +100,7 @@ class ProcessFileTests(unittest.TestCase):
         self.assertEqual(REJECTED_DIR, WORKSPACE_DIR / "rejected")
         self.assertEqual(WORKSPACE_DIR.name, "workspace")
 
-    def test_writes_processed_and_rejected_rows_and_reports_repairs(self) -> None:
+    def test_writes_cleaned_and_rejected_rows_and_reports_repairs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             input_path = root / "motor.txt"
@@ -152,7 +152,7 @@ class ProcessFileTests(unittest.TestCase):
             self.assertEqual(get_input_folders(input_dir), [input_dir / "Group"])
             self.assertEqual(get_txt_files(input_dir), [nested_file, loose_file])
 
-    def test_outputs_from_nested_folders_are_flat_and_folder_prefixed(self) -> None:
+    def test_outputs_from_nested_folders_preserve_input_folder_structure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             input_dir = root / "input"
@@ -180,10 +180,10 @@ class ProcessFileTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                [result.output_path.name for result in results],
+                [result.output_path for result in results],
                 [
-                    "Group_One_capture_processed.txt",
-                    "Group_Two_capture_processed.txt",
+                    output_dir / "Group One" / "capture_cleaned.txt",
+                    output_dir / "Group Two" / "capture_cleaned.txt",
                 ],
             )
             for result in results:
@@ -193,7 +193,7 @@ class ProcessFileTests(unittest.TestCase):
             self.assertEqual(len(list(output_dir.iterdir())), 2)
             self.assertEqual(len(list(rejected_dir.iterdir())), 2)
 
-    def test_duplicate_flattened_folder_names_get_unique_outputs(self) -> None:
+    def test_similar_nested_paths_keep_outputs_in_separate_folders(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             input_dir = root / "input"
@@ -204,7 +204,10 @@ class ProcessFileTests(unittest.TestCase):
             ]
             for file_path in files:
                 file_path.parent.mkdir(parents=True)
-                file_path.write_text("2571 22C3 3D1F 3D1F\n", encoding="utf-8")
+                file_path.write_text(
+                    "2571 22C3 3D1F 3D1F\nReset ODS\n",
+                    encoding="utf-8",
+                )
 
             results = process_files(
                 files,
@@ -216,10 +219,17 @@ class ProcessFileTests(unittest.TestCase):
             )
 
             self.assertEqual(
-                [result.output_path.name for result in results],
+                [result.output_path for result in results],
                 [
-                    "a_b_c_run_processed.txt",
-                    "a_b_c_run_002_processed.txt",
+                    output_dir / "a_b" / "c" / "run_cleaned.txt",
+                    output_dir / "a" / "b_c" / "run_cleaned.txt",
+                ],
+            )
+            self.assertEqual(
+                [result.rejected_path.name for result in results],
+                [
+                    "a_b_c_run_rejected.txt",
+                    "a_b_c_run_002_rejected.txt",
                 ],
             )
 
@@ -244,8 +254,10 @@ class ProcessFileTests(unittest.TestCase):
             ):
                 txt_parser.main()
 
-            self.assertTrue((output_dir / "loose_processed.txt").exists())
-            self.assertTrue((output_dir / "Group_nested_processed.txt").exists())
+            self.assertTrue((output_dir / "loose_cleaned.txt").exists())
+            self.assertTrue(
+                (output_dir / "Group" / "nested_cleaned.txt").exists()
+            )
 
     def test_main_processes_a_selected_folder_recursively(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -267,7 +279,7 @@ class ProcessFileTests(unittest.TestCase):
                 txt_parser.main()
 
             self.assertTrue(
-                (output_dir / "Group_Subgroup_run_processed.txt").exists()
+                (output_dir / "Group" / "Subgroup" / "run_cleaned.txt").exists()
             )
 
     def test_can_return_from_folder_selection_to_process_all_files(self) -> None:
@@ -292,8 +304,10 @@ class ProcessFileTests(unittest.TestCase):
             ):
                 txt_parser.main()
 
-            self.assertTrue((output_dir / "loose_processed.txt").exists())
-            self.assertTrue((output_dir / "Group_nested_processed.txt").exists())
+            self.assertTrue((output_dir / "loose_cleaned.txt").exists())
+            self.assertTrue(
+                (output_dir / "Group" / "nested_cleaned.txt").exists()
+            )
             self.assertIn("0. Back to main menu", captured_output.getvalue())
 
     def test_main_processes_a_selected_loose_file(self) -> None:
@@ -321,7 +335,7 @@ class ProcessFileTests(unittest.TestCase):
                 txt_parser.main()
 
             self.assertTrue(
-                (output_dir / "run_2026-11-02_processed.txt").exists()
+                (output_dir / "run_2026-11-02_cleaned.txt").exists()
             )
             self.assertTrue(
                 (rejected_dir / "run_2026-11-02_rejected.txt").exists()
