@@ -1,11 +1,12 @@
-from . import sensitivity_analysis, txt_parser
+from . import sensitivity_analysis, sr_mechanical_analysis, txt_parser
 
 
 def main() -> None:
     while True:
         print("\nJ4S ODS TOOL")
         print("1 - Parse raw motor logs")
-        print("2 - Analyze cleaned logs")
+        print("2 - Obstacle measurement")
+        print("3 - S-R mechanical analysis")
         print("0 - Exit")
         choice = input("\nChoice: ").strip()
 
@@ -13,6 +14,8 @@ def main() -> None:
             txt_parser.main()
         elif choice == "2":
             sensitivity_analysis.main()
+        elif choice == "3":
+            sr_mechanical_analysis.main()
         elif choice == "0":
             input("\nPress ENTER to exit...")
             return
