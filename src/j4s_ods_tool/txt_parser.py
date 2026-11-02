@@ -5,9 +5,10 @@ import re
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_DIR = PROJECT_ROOT / "workspace"
-INPUT_DIR = WORKSPACE_DIR / "input"
-OUTPUT_DIR = WORKSPACE_DIR / "output"
-REJECTED_DIR = WORKSPACE_DIR / "rejected"
+PARSER_DIR = WORKSPACE_DIR / "parser"
+INPUT_DIR = PARSER_DIR / "input"
+OUTPUT_DIR = PARSER_DIR / "output"
+REJECTED_DIR = PARSER_DIR / "rejected"
 
 VALID_SYMBOLS = {"S", "R", "E", "N", "X", "Y"}
 SYMBOL_PRIORITY = {

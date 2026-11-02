@@ -1,4 +1,23 @@
-from .txt_parser import main
+from . import sensitivity_analysis, txt_parser
+
+
+def main() -> None:
+    while True:
+        print("\nJ4S ODS TOOL")
+        print("1 - Parse raw motor logs")
+        print("2 - Analyze cleaned logs")
+        print("0 - Exit")
+        choice = input("\nChoice: ").strip()
+
+        if choice == "1":
+            txt_parser.main()
+        elif choice == "2":
+            sensitivity_analysis.main()
+        elif choice == "0":
+            input("\nPress ENTER to exit...")
+            return
+        else:
+            print("Unknown option.")
 
 
 if __name__ == "__main__":

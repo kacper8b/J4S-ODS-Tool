@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from j4s_ods_tool import txt_parser
 from j4s_ods_tool.txt_parser import (
     INPUT_DIR,
+    OUTPUT_DIR,
     REJECTED_DIR,
     WORKSPACE_DIR,
     get_input_folders,
@@ -96,8 +97,9 @@ class ParseLineTests(unittest.TestCase):
 
 class ProcessFileTests(unittest.TestCase):
     def test_default_data_directories_are_under_workspace(self) -> None:
-        self.assertEqual(INPUT_DIR, WORKSPACE_DIR / "input")
-        self.assertEqual(REJECTED_DIR, WORKSPACE_DIR / "rejected")
+        self.assertEqual(INPUT_DIR, WORKSPACE_DIR / "parser" / "input")
+        self.assertEqual(OUTPUT_DIR, WORKSPACE_DIR / "parser" / "output")
+        self.assertEqual(REJECTED_DIR, WORKSPACE_DIR / "parser" / "rejected")
         self.assertEqual(WORKSPACE_DIR.name, "workspace")
 
     def test_writes_cleaned_and_rejected_rows_and_reports_repairs(self) -> None:
