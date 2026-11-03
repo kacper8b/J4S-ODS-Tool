@@ -15,9 +15,7 @@ from j4s_ods_tool.sensitivity_analysis import LogRecord
 from j4s_ods_tool.sr_mechanical_analysis import (
     METADATA_CSV_FIELDS,
     METADATA_FIELDS,
-    PEAK_CONFIRMATION_SAMPLES,
     STARTUP_SAMPLES,
-    WINDOW_AFTER_R,
     MotorMetadata,
     analyze_files,
     analyze_records,
@@ -33,8 +31,9 @@ def record(line_number: int, ods: int, *events: str) -> LogRecord:
 def with_startup_samples(
     samples: list[tuple[int, tuple[str, ...]]],
 ) -> list[LogRecord]:
+    startup_ods = samples[0][0] if samples else 0
     return [
-        *(record(index + 1, 0) for index in range(STARTUP_SAMPLES)),
+        *(record(index + 1, startup_ods) for index in range(STARTUP_SAMPLES)),
         *(
             record(STARTUP_SAMPLES + index + 1, ods, *events)
             for index, (ods, events) in enumerate(samples)
@@ -43,14 +42,17 @@ def with_startup_samples(
 
 
 class AnalyzeRecordsTests(unittest.TestCase):
-    def test_measures_peak_to_peak_load_in_pre_s_window_and_reports_s_to_r_time(self) -> None:
+    def test_measures_range_from_four_sample_s_reference_through_r(self) -> None:
         records = with_startup_samples(
             [
+                (100, ()),
+                (999, ()),
                 (900, ()),
-                (884, ()),
+                (950, ()),
                 (850, ("S",)),
-                (830, ()),
+                (900, ()),
                 (800, ("R",)),
+                (0, ()),
             ]
         )
 
@@ -59,16 +61,16 @@ class AnalyzeRecordsTests(unittest.TestCase):
         self.assertEqual(len(sequences), 1)
         sequence = sequences[0]
         self.assertEqual(sequence.file, "run_cleaned.txt")
-        self.assertEqual(sequence.start_index, STARTUP_SAMPLES)
-        self.assertEqual(sequence.s_index, STARTUP_SAMPLES + 2)
-        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 4)
+        self.assertEqual(sequence.start_index, STARTUP_SAMPLES + 1)
+        self.assertEqual(sequence.s_index, STARTUP_SAMPLES + 4)
+        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 6)
         self.assertEqual(sequence.segment_min, 800)
-        self.assertEqual(sequence.segment_max, 900)
-        self.assertEqual(sequence.peak_load, 100)
+        self.assertEqual(sequence.segment_max, 999)
+        self.assertEqual(sequence.peak_load, 199)
         self.assertEqual(sequence.sr_time_ms, 40)
         self.assertEqual(sequence.status, "VALID")
 
-    def test_e_and_x_close_sequences_without_s_to_r_candidates(self) -> None:
+    def test_e_and_x_close_sequences_without_measurements(self) -> None:
         sequences = analyze_records(
             with_startup_samples(
                 [
@@ -84,7 +86,7 @@ class AnalyzeRecordsTests(unittest.TestCase):
 
         self.assertEqual(sequences, [])
 
-    def test_new_s_replaces_previous_start(self) -> None:
+    def test_new_s_replaces_previous_start_without_creating_a_measurement(self) -> None:
         sequences = analyze_records(
             with_startup_samples(
                 [
@@ -97,40 +99,19 @@ class AnalyzeRecordsTests(unittest.TestCase):
         )
 
         self.assertEqual(len(sequences), 1)
-        self.assertEqual(sequences[0].start_index, STARTUP_SAMPLES)
         self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 2)
         self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 3)
+        self.assertEqual(sequences[0].peak_load, 40)
 
-    def test_same_record_s_and_r_without_a_confirmed_peak_is_invalid(self) -> None:
+    def test_same_record_s_and_r_uses_s_reference_and_has_zero_duration(self) -> None:
         sequence = analyze_records(
             with_startup_samples([(100, ("S", "R"))])
         )[0]
 
         self.assertEqual(sequence.s_index, sequence.r_index)
         self.assertEqual(sequence.sr_time_ms, 0)
-        self.assertEqual(sequence.status, "INVALID")
-        self.assertEqual(sequence.reason, "NO_CONFIRMED_PEAK")
-        self.assertIsNone(sequence.start_index)
-
-    def test_peak_requires_minimum_drop_within_confirmation_window(self) -> None:
-        confirmed_samples = [
-            (200, ()),
-            *[(199 - index, ()) for index in range(PEAK_CONFIRMATION_SAMPLES - 1)],
-            (184, ("S", "R")),
-        ]
-        unconfirmed_samples = [
-            (200, ()),
-            *[(199 - index, ()) for index in range(PEAK_CONFIRMATION_SAMPLES - 1)],
-            (185, ("S", "R")),
-        ]
-
-        confirmed = analyze_records(with_startup_samples(confirmed_samples))[0]
-        unconfirmed = analyze_records(with_startup_samples(unconfirmed_samples))[0]
-
-        self.assertEqual(confirmed.start_index, STARTUP_SAMPLES)
-        self.assertEqual(confirmed.status, "VALID")
-        self.assertEqual(unconfirmed.start_index, None)
-        self.assertEqual(unconfirmed.reason, "NO_CONFIRMED_PEAK")
+        self.assertEqual(sequence.status, "VALID")
+        self.assertEqual(sequence.peak_load, 0)
 
     def test_zero_ods_and_load_above_500_are_invalid(self) -> None:
         zero_sequence = analyze_records(
@@ -158,6 +139,24 @@ class AnalyzeRecordsTests(unittest.TestCase):
         self.assertEqual(excessive_sequence.status, "INVALID")
         self.assertEqual(excessive_sequence.reason, "EXCESSIVE_LOAD")
         self.assertEqual(excessive_sequence.peak_load, 501)
+
+    def test_zero_outside_s_reference_and_s_to_r_interval_is_ignored(self) -> None:
+        sequence = analyze_records(
+            with_startup_samples(
+                [
+                    (0, ()),
+                    (0, ()),
+                    (400, ()),
+                    (300, ()),
+                    (250, ("S",)),
+                    (200, ("R",)),
+                ]
+            )
+        )[0]
+
+        self.assertEqual(sequence.status, "VALID")
+        self.assertEqual(sequence.start_index, STARTUP_SAMPLES + 2)
+        self.assertEqual(sequence.peak_load, 200)
 
     def test_load_equal_to_500_is_valid(self) -> None:
         sequence = analyze_records(
@@ -196,182 +195,7 @@ class AnalyzeRecordsTests(unittest.TestCase):
                 with_startup_samples([(100, ("S", "R", "E"))])
             )
 
-    def test_includes_exactly_ten_samples_after_r_without_requiring_rebound(self) -> None:
-        samples = [
-            (300, ()),
-            (280, ("S",)),
-            (270, ("R",)),
-            *[(260 - offset, ()) for offset in range(WINDOW_AFTER_R)],
-            (100, ()),
-        ]
-
-        sequence = analyze_records(with_startup_samples(samples))[0]
-
-        self.assertEqual(sequence.segment_min, 251)
-        self.assertEqual(sequence.peak_load, 49)
-        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 2)
-        self.assertEqual(sequence.sr_time_ms, 20)
-
-    def test_merges_at_tenth_sample_but_not_eleventh_after_r(self) -> None:
-        for gap, expected_count in ((10, 1), (11, 2)):
-            with self.subTest(gap=gap):
-                samples = [
-                    (300, ()),
-                    (280, ("S",)),
-                    (270, ("R",)),
-                    *[(270, ())] * (gap - 1),
-                    (250, ("S",)),
-                    (200, ("R",)),
-                    (180, ()),
-                ]
-
-                sequences = analyze_records(with_startup_samples(samples))
-
-                self.assertEqual(len(sequences), expected_count)
-                self.assertEqual(sequences[0].start_index, STARTUP_SAMPLES)
-                self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 1)
-                if gap == 10:
-                    self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 13)
-                    self.assertEqual(sequences[0].peak_load, 120)
-                    self.assertEqual(sequences[0].sr_time_ms, 240)
-                else:
-                    self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 2)
-                    self.assertEqual(sequences[0].peak_load, 30)
-
-    def test_merges_entire_chain_and_keeps_first_peak(self) -> None:
-        sequences = analyze_records(
-            with_startup_samples(
-                [
-                    (300, ()),
-                    (280, ("S",)),
-                    (270, ("R",)),
-                    (400, ()),
-                    (250, ("S",)),
-                    (240, ("R",)),
-                    (220, ("S",)),
-                    (210, ("R",)),
-                    (180, ()),
-                ]
-            )
-        )
-
-        self.assertEqual(len(sequences), 1)
-        sequence = sequences[0]
-        self.assertEqual(sequence.start_index, STARTUP_SAMPLES)
-        self.assertEqual(sequence.s_index, STARTUP_SAMPLES + 1)
-        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 7)
-        self.assertEqual(sequence.segment_min, 180)
-        self.assertEqual(sequence.segment_max, 400)
-        self.assertEqual(sequence.peak_load, 220)
-        self.assertEqual(sequence.sr_time_ms, 120)
-
-    def test_non_r_sequence_stops_previous_window_before_its_start(self) -> None:
-        for terminal_events in (("X",), ()):
-            with self.subTest(terminal_events=terminal_events):
-                sequences = analyze_records(
-                    with_startup_samples(
-                        [
-                            (300, ()),
-                            (280, ("S",)),
-                            (270, ("R",)),
-                            (260, ()),
-                            (100, ("S",)),
-                            (0, terminal_events),
-                        ]
-                    )
-                )
-
-                self.assertEqual(len(sequences), 1)
-                self.assertEqual(sequences[0].segment_min, 260)
-                self.assertEqual(sequences[0].status, "VALID")
-                self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 2)
-
-    def test_obstacle_exclusion_includes_100th_sample_and_post_r_window(self) -> None:
-        for gap, expected_count in ((10, 0), (100, 0), (101, 0), (110, 0), (111, 1)):
-            with self.subTest(gap=gap):
-                sequences = analyze_records(
-                    with_startup_samples(
-                        [
-                            (300, ()),
-                            (280, ("S",)),
-                            (270, ("R",)),
-                            *[(260, ())] * (gap - 1),
-                            (200, ("S",)),
-                            *[(180, ())] * 20,
-                            (100, ("E",)),
-                        ]
-                    )
-                )
-
-                self.assertEqual(len(sequences), expected_count)
-
-    def test_following_s_to_e_excludes_entire_merged_chain(self) -> None:
-        sequences = analyze_records(
-            with_startup_samples(
-                [
-                    (300, ()),
-                    (280, ("S",)),
-                    (270, ("R",)),
-                    (250, ("S",)),
-                    (240, ("R",)),
-                    (220, ("S",)),
-                    (100, ("E",)),
-                    *[(100, ())] * 40,
-                    (300, ()),
-                    (280, ("S",)),
-                    (270, ("R",)),
-                ]
-            )
-        )
-
-        self.assertEqual(len(sequences), 1)
-        self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 48)
-        self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 49)
-
-    def test_peak_overlapping_obstacle_zone_excludes_later_measurement(self) -> None:
-        sequences = analyze_records(
-            with_startup_samples(
-                [
-                    (300, ()),
-                    (280, ("S",)),
-                    (270, ("E",)),
-                    (260, ()),
-                    (250, ("S",)),
-                    (240, ("R",)),
-                ]
-            )
-        )
-
-        self.assertEqual(sequences, [])
-
-    def test_replaced_obstacle_start_uses_only_start_closed_by_e(self) -> None:
-        sequences = analyze_records(
-            with_startup_samples(
-                [
-                    (300, ()),
-                    (280, ("S",)),
-                    (270, ("R",)),
-                    (260, ("S",)),
-                    *[(260, ())] * 120,
-                    (250, ("S",)),
-                    (240, ("E",)),
-                ]
-            )
-        )
-
-        self.assertEqual(len(sequences), 1)
-        self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 1)
-
-    def test_same_record_s_and_e_excludes_previous_sequence(self) -> None:
-        sequences = analyze_records(
-            with_startup_samples(
-                [(300, ()), (280, ("S",)), (270, ("R",)), (200, ("S", "E"))]
-            )
-        )
-
-        self.assertEqual(sequences, [])
-
-    def test_replaced_next_start_does_not_merge_into_previous_sequence(self) -> None:
+    def test_each_s_to_r_sequence_is_measured_independently_without_merging(self) -> None:
         sequences = analyze_records(
             with_startup_samples(
                 [
@@ -386,35 +210,29 @@ class AnalyzeRecordsTests(unittest.TestCase):
         )
 
         self.assertEqual(len(sequences), 2)
-        self.assertEqual(sequences[0].segment_min, 270)
+        self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 1)
+        self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 2)
+        self.assertEqual(sequences[0].peak_load, 30)
         self.assertEqual(sequences[1].s_index, STARTUP_SAMPLES + 4)
+        self.assertEqual(sequences[1].r_index, STARTUP_SAMPLES + 5)
+        self.assertEqual(sequences[1].peak_load, 120)
 
-    def test_zero_in_post_r_window_invalidates_extended_measurement(self) -> None:
-        sequence = analyze_records(
-            with_startup_samples(
-                [(300, ()), (280, ("S",)), (270, ("R",)), (0, ())]
-            )
-        )[0]
-
-        self.assertEqual(sequence.status, "INVALID")
-        self.assertEqual(sequence.reason, "ODS_RESET_0000")
-
-    def test_merging_does_not_use_later_drop_to_confirm_first_peak(self) -> None:
-        sequence = analyze_records(
+    def test_following_obstacle_does_not_exclude_a_completed_s_to_r_measurement(self) -> None:
+        sequences = analyze_records(
             with_startup_samples(
                 [
                     (300, ()),
-                    (295, ("S",)),
-                    (295, ("R",)),
-                    (250, ("S",)),
-                    (200, ("R",)),
+                    (280, ("S",)),
+                    (270, ("R",)),
+                    (200, ("S",)),
+                    (100, ("E",)),
                 ]
             )
-        )[0]
+        )
 
-        self.assertEqual(sequence.reason, "NO_CONFIRMED_PEAK")
-        self.assertEqual(sequence.s_index, STARTUP_SAMPLES + 1)
-        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 4)
+        self.assertEqual(len(sequences), 1)
+        self.assertEqual(sequences[0].status, "VALID")
+        self.assertEqual(sequences[0].peak_load, 30)
 
 
 class ReportTests(unittest.TestCase):
