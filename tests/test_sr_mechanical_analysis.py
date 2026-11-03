@@ -15,6 +15,9 @@ from j4s_ods_tool.sensitivity_analysis import LogRecord
 from j4s_ods_tool.sr_mechanical_analysis import (
     METADATA_CSV_FIELDS,
     METADATA_FIELDS,
+    PEAK_CONFIRMATION_SAMPLES,
+    STARTUP_SAMPLES,
+    WINDOW_AFTER_R,
     MotorMetadata,
     analyze_files,
     analyze_records,
@@ -27,74 +30,126 @@ def record(line_number: int, ods: int, *events: str) -> LogRecord:
     return LogRecord(line_number, ods, events)
 
 
+def with_startup_samples(
+    samples: list[tuple[int, tuple[str, ...]]],
+) -> list[LogRecord]:
+    return [
+        *(record(index + 1, 0) for index in range(STARTUP_SAMPLES)),
+        *(
+            record(STARTUP_SAMPLES + index + 1, ods, *events)
+            for index, (ods, events) in enumerate(samples)
+        ),
+    ]
+
+
 class AnalyzeRecordsTests(unittest.TestCase):
     def test_measures_peak_to_peak_load_in_pre_s_window_and_reports_s_to_r_time(self) -> None:
-        records = [record(index + 1, 100) for index in range(45)]
-        records[0] = record(1, 900)
-        records[41] = record(42, 150, "S")
-        records[43] = record(44, 80, "R")
+        records = with_startup_samples(
+            [
+                (900, ()),
+                (884, ()),
+                (850, ("S",)),
+                (830, ()),
+                (800, ("R",)),
+            ]
+        )
 
         sequences = analyze_records(records, file_name="run_cleaned.txt")
 
         self.assertEqual(len(sequences), 1)
         sequence = sequences[0]
         self.assertEqual(sequence.file, "run_cleaned.txt")
-        self.assertEqual(sequence.start_index, 1)
-        self.assertEqual(sequence.s_index, 41)
-        self.assertEqual(sequence.r_index, 43)
-        self.assertEqual(sequence.segment_min, 80)
-        self.assertEqual(sequence.segment_max, 150)
-        self.assertEqual(sequence.peak_load, 70)
+        self.assertEqual(sequence.start_index, STARTUP_SAMPLES)
+        self.assertEqual(sequence.s_index, STARTUP_SAMPLES + 2)
+        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 4)
+        self.assertEqual(sequence.segment_min, 800)
+        self.assertEqual(sequence.segment_max, 900)
+        self.assertEqual(sequence.peak_load, 100)
         self.assertEqual(sequence.sr_time_ms, 40)
         self.assertEqual(sequence.status, "VALID")
 
     def test_e_and_x_close_sequences_without_s_to_r_candidates(self) -> None:
         sequences = analyze_records(
-            [
-                record(1, 100, "S"),
-                record(2, 90, "E"),
-                record(3, 100, "S"),
-                record(4, 90, "X"),
-                record(5, 80, "R"),
-            ]
+            with_startup_samples(
+                [
+                    (200, ()),
+                    (180, ("S",)),
+                    (170, ("E",)),
+                    (200, ("S",)),
+                    (170, ("X",)),
+                    (80, ("R",)),
+                ]
+            )
         )
 
         self.assertEqual(sequences, [])
 
     def test_new_s_replaces_previous_start(self) -> None:
         sequences = analyze_records(
-            [
-                record(1, 100, "S"),
-                record(2, 110),
-                record(3, 120, "S"),
-                record(4, 90, "R"),
-            ]
+            with_startup_samples(
+                [
+                    (200, ()),
+                    (190, ("S",)),
+                    (220, ("S",)),
+                    (180, ("R",)),
+                ]
+            )
         )
 
         self.assertEqual(len(sequences), 1)
-        self.assertEqual(sequences[0].s_index, 2)
-        self.assertEqual(sequences[0].r_index, 3)
+        self.assertEqual(sequences[0].start_index, STARTUP_SAMPLES)
+        self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 2)
+        self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 3)
 
-    def test_same_record_s_and_r_is_a_zero_time_candidate(self) -> None:
-        sequence = analyze_records([record(1, 100, "S", "R")])[0]
+    def test_same_record_s_and_r_without_a_confirmed_peak_is_invalid(self) -> None:
+        sequence = analyze_records(
+            with_startup_samples([(100, ("S", "R"))])
+        )[0]
 
         self.assertEqual(sequence.s_index, sequence.r_index)
         self.assertEqual(sequence.sr_time_ms, 0)
-        self.assertEqual(sequence.status, "VALID")
+        self.assertEqual(sequence.status, "INVALID")
+        self.assertEqual(sequence.reason, "NO_CONFIRMED_PEAK")
+        self.assertIsNone(sequence.start_index)
+
+    def test_peak_requires_minimum_drop_within_confirmation_window(self) -> None:
+        confirmed_samples = [
+            (200, ()),
+            *[(199 - index, ()) for index in range(PEAK_CONFIRMATION_SAMPLES - 1)],
+            (184, ("S", "R")),
+        ]
+        unconfirmed_samples = [
+            (200, ()),
+            *[(199 - index, ()) for index in range(PEAK_CONFIRMATION_SAMPLES - 1)],
+            (185, ("S", "R")),
+        ]
+
+        confirmed = analyze_records(with_startup_samples(confirmed_samples))[0]
+        unconfirmed = analyze_records(with_startup_samples(unconfirmed_samples))[0]
+
+        self.assertEqual(confirmed.start_index, STARTUP_SAMPLES)
+        self.assertEqual(confirmed.status, "VALID")
+        self.assertEqual(unconfirmed.start_index, None)
+        self.assertEqual(unconfirmed.reason, "NO_CONFIRMED_PEAK")
 
     def test_zero_ods_and_load_above_500_are_invalid(self) -> None:
         zero_sequence = analyze_records(
-            [
-                record(1, 0),
-                record(2, 100, "S"),
-                record(3, 100, "R"),
-            ]
+            with_startup_samples(
+                [
+                    (300, ()),
+                    (0, ("S",)),
+                    (100, ("R",)),
+                ]
+            )
         )[0]
         excessive_sequence = analyze_records(
-            [
-                record(1, 100, "S"),
-                record(2, 601, "R"),
-            ]
+            with_startup_samples(
+                [
+                    (1100, ()),
+                    (600, ("S",)),
+                    (599, ("R",)),
+                ]
+            )
         )[0]
 
         self.assertEqual(zero_sequence.status, "INVALID")
@@ -106,15 +161,260 @@ class AnalyzeRecordsTests(unittest.TestCase):
 
     def test_load_equal_to_500_is_valid(self) -> None:
         sequence = analyze_records(
-            [record(1, 100, "S"), record(2, 600, "R")]
+            with_startup_samples(
+                [
+                    (600, ()),
+                    (200, ("S",)),
+                    (100, ("R",)),
+                ]
+            )
         )[0]
 
         self.assertEqual(sequence.peak_load, 500)
         self.assertEqual(sequence.status, "VALID")
 
+    def test_ignores_start_events_in_first_100_records(self) -> None:
+        records = [record(index + 1, 100) for index in range(STARTUP_SAMPLES)]
+        records[20] = record(21, 200, "S")
+        records[21] = record(22, 100, "R")
+        records.extend(
+            [
+                record(STARTUP_SAMPLES + 1, 200),
+                record(STARTUP_SAMPLES + 2, 180, "S"),
+                record(STARTUP_SAMPLES + 3, 100, "R"),
+            ]
+        )
+
+        sequences = analyze_records(records)
+
+        self.assertEqual(len(sequences), 1)
+        self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 1)
+
     def test_rejects_multiple_terminal_events_in_one_record(self) -> None:
         with self.assertRaisesRegex(ValueError, "multiple terminal events"):
-            analyze_records([record(1, 100, "S", "R", "E")])
+            analyze_records(
+                with_startup_samples([(100, ("S", "R", "E"))])
+            )
+
+    def test_includes_exactly_ten_samples_after_r_without_requiring_rebound(self) -> None:
+        samples = [
+            (300, ()),
+            (280, ("S",)),
+            (270, ("R",)),
+            *[(260 - offset, ()) for offset in range(WINDOW_AFTER_R)],
+            (100, ()),
+        ]
+
+        sequence = analyze_records(with_startup_samples(samples))[0]
+
+        self.assertEqual(sequence.segment_min, 251)
+        self.assertEqual(sequence.peak_load, 49)
+        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 2)
+        self.assertEqual(sequence.sr_time_ms, 20)
+
+    def test_merges_at_tenth_sample_but_not_eleventh_after_r(self) -> None:
+        for gap, expected_count in ((10, 1), (11, 2)):
+            with self.subTest(gap=gap):
+                samples = [
+                    (300, ()),
+                    (280, ("S",)),
+                    (270, ("R",)),
+                    *[(270, ())] * (gap - 1),
+                    (250, ("S",)),
+                    (200, ("R",)),
+                    (180, ()),
+                ]
+
+                sequences = analyze_records(with_startup_samples(samples))
+
+                self.assertEqual(len(sequences), expected_count)
+                self.assertEqual(sequences[0].start_index, STARTUP_SAMPLES)
+                self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 1)
+                if gap == 10:
+                    self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 13)
+                    self.assertEqual(sequences[0].peak_load, 120)
+                    self.assertEqual(sequences[0].sr_time_ms, 240)
+                else:
+                    self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 2)
+                    self.assertEqual(sequences[0].peak_load, 30)
+
+    def test_merges_entire_chain_and_keeps_first_peak(self) -> None:
+        sequences = analyze_records(
+            with_startup_samples(
+                [
+                    (300, ()),
+                    (280, ("S",)),
+                    (270, ("R",)),
+                    (400, ()),
+                    (250, ("S",)),
+                    (240, ("R",)),
+                    (220, ("S",)),
+                    (210, ("R",)),
+                    (180, ()),
+                ]
+            )
+        )
+
+        self.assertEqual(len(sequences), 1)
+        sequence = sequences[0]
+        self.assertEqual(sequence.start_index, STARTUP_SAMPLES)
+        self.assertEqual(sequence.s_index, STARTUP_SAMPLES + 1)
+        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 7)
+        self.assertEqual(sequence.segment_min, 180)
+        self.assertEqual(sequence.segment_max, 400)
+        self.assertEqual(sequence.peak_load, 220)
+        self.assertEqual(sequence.sr_time_ms, 120)
+
+    def test_non_r_sequence_stops_previous_window_before_its_start(self) -> None:
+        for terminal_events in (("X",), ()):
+            with self.subTest(terminal_events=terminal_events):
+                sequences = analyze_records(
+                    with_startup_samples(
+                        [
+                            (300, ()),
+                            (280, ("S",)),
+                            (270, ("R",)),
+                            (260, ()),
+                            (100, ("S",)),
+                            (0, terminal_events),
+                        ]
+                    )
+                )
+
+                self.assertEqual(len(sequences), 1)
+                self.assertEqual(sequences[0].segment_min, 260)
+                self.assertEqual(sequences[0].status, "VALID")
+                self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 2)
+
+    def test_obstacle_exclusion_includes_100th_sample_and_post_r_window(self) -> None:
+        for gap, expected_count in ((10, 0), (100, 0), (101, 0), (110, 0), (111, 1)):
+            with self.subTest(gap=gap):
+                sequences = analyze_records(
+                    with_startup_samples(
+                        [
+                            (300, ()),
+                            (280, ("S",)),
+                            (270, ("R",)),
+                            *[(260, ())] * (gap - 1),
+                            (200, ("S",)),
+                            *[(180, ())] * 20,
+                            (100, ("E",)),
+                        ]
+                    )
+                )
+
+                self.assertEqual(len(sequences), expected_count)
+
+    def test_following_s_to_e_excludes_entire_merged_chain(self) -> None:
+        sequences = analyze_records(
+            with_startup_samples(
+                [
+                    (300, ()),
+                    (280, ("S",)),
+                    (270, ("R",)),
+                    (250, ("S",)),
+                    (240, ("R",)),
+                    (220, ("S",)),
+                    (100, ("E",)),
+                    *[(100, ())] * 40,
+                    (300, ()),
+                    (280, ("S",)),
+                    (270, ("R",)),
+                ]
+            )
+        )
+
+        self.assertEqual(len(sequences), 1)
+        self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 48)
+        self.assertEqual(sequences[0].r_index, STARTUP_SAMPLES + 49)
+
+    def test_peak_overlapping_obstacle_zone_excludes_later_measurement(self) -> None:
+        sequences = analyze_records(
+            with_startup_samples(
+                [
+                    (300, ()),
+                    (280, ("S",)),
+                    (270, ("E",)),
+                    (260, ()),
+                    (250, ("S",)),
+                    (240, ("R",)),
+                ]
+            )
+        )
+
+        self.assertEqual(sequences, [])
+
+    def test_replaced_obstacle_start_uses_only_start_closed_by_e(self) -> None:
+        sequences = analyze_records(
+            with_startup_samples(
+                [
+                    (300, ()),
+                    (280, ("S",)),
+                    (270, ("R",)),
+                    (260, ("S",)),
+                    *[(260, ())] * 120,
+                    (250, ("S",)),
+                    (240, ("E",)),
+                ]
+            )
+        )
+
+        self.assertEqual(len(sequences), 1)
+        self.assertEqual(sequences[0].s_index, STARTUP_SAMPLES + 1)
+
+    def test_same_record_s_and_e_excludes_previous_sequence(self) -> None:
+        sequences = analyze_records(
+            with_startup_samples(
+                [(300, ()), (280, ("S",)), (270, ("R",)), (200, ("S", "E"))]
+            )
+        )
+
+        self.assertEqual(sequences, [])
+
+    def test_replaced_next_start_does_not_merge_into_previous_sequence(self) -> None:
+        sequences = analyze_records(
+            with_startup_samples(
+                [
+                    (300, ()),
+                    (280, ("S",)),
+                    (270, ("R",)),
+                    (260, ("S",)),
+                    (200, ("S",)),
+                    (180, ("R",)),
+                ]
+            )
+        )
+
+        self.assertEqual(len(sequences), 2)
+        self.assertEqual(sequences[0].segment_min, 270)
+        self.assertEqual(sequences[1].s_index, STARTUP_SAMPLES + 4)
+
+    def test_zero_in_post_r_window_invalidates_extended_measurement(self) -> None:
+        sequence = analyze_records(
+            with_startup_samples(
+                [(300, ()), (280, ("S",)), (270, ("R",)), (0, ())]
+            )
+        )[0]
+
+        self.assertEqual(sequence.status, "INVALID")
+        self.assertEqual(sequence.reason, "ODS_RESET_0000")
+
+    def test_merging_does_not_use_later_drop_to_confirm_first_peak(self) -> None:
+        sequence = analyze_records(
+            with_startup_samples(
+                [
+                    (300, ()),
+                    (295, ("S",)),
+                    (295, ("R",)),
+                    (250, ("S",)),
+                    (200, ("R",)),
+                ]
+            )
+        )[0]
+
+        self.assertEqual(sequence.reason, "NO_CONFIRMED_PEAK")
+        self.assertEqual(sequence.s_index, STARTUP_SAMPLES + 1)
+        self.assertEqual(sequence.r_index, STARTUP_SAMPLES + 4)
 
 
 class ReportTests(unittest.TestCase):
@@ -137,11 +437,21 @@ class ReportTests(unittest.TestCase):
             second = output_dir / "second_cleaned.txt"
             self._write_cleaned_file(
                 first,
-                [(100, ()), (120, ("S",)), (100, ("R",))],
+                [
+                    *((0, ()) for _ in range(STARTUP_SAMPLES)),
+                    (200, ()),
+                    (180, ("S",)),
+                    (160, ("R",)),
+                ],
             )
             self._write_cleaned_file(
                 second,
-                [(200, ("S",)), (100, ("R",))],
+                [
+                    *((0, ()) for _ in range(STARTUP_SAMPLES)),
+                    (300, ()),
+                    (200, ("S",)),
+                    (100, ("R",)),
+                ],
             )
 
             summary_rows, sequences, report_paths = analyze_files(
@@ -170,12 +480,13 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(len(sequences), 2)
             self.assertEqual(report_paths[0].name, "sensitivity_sr_summary_test.csv")
             self.assertEqual(report_paths[1].name, "sensitivity_sr_details_test.csv")
+            self.assertEqual(len(summary_rows), 3)
             self.assertEqual(summary_rows[-1]["File"], "ALL_FILES_POOLED")
             self.assertEqual(summary_rows[-1]["SR_Count"], 2)
-            self.assertEqual(summary_rows[-1]["Average_SR_Load"], 60)
-            self.assertEqual(summary_rows[-1]["Max_SR_Load"], 100)
-            self.assertEqual(summary_rows[-1]["P95_SR_Load"], 96)
-            self.assertEqual(summary_rows[-1]["SR_Load_STD"], 56.57)
+            self.assertEqual(summary_rows[-1]["Average_SR_Load"], 120)
+            self.assertEqual(summary_rows[-1]["Max_SR_Load"], 200)
+            self.assertEqual(summary_rows[-1]["P95_SR_Load"], 192)
+            self.assertEqual(summary_rows[-1]["SR_Load_STD"], 113.14)
             self.assertEqual(summary_rows[-1]["Average_SR_Time_ms"], 20)
             self.assertEqual(summary_rows[0]["Project"], "J4S IO")
             self.assertEqual(summary_rows[0]["Type"], "SLE")
@@ -218,7 +529,7 @@ class ReportTests(unittest.TestCase):
                 "SR_Time_ms",
             ],
         )
-        self.assertEqual(details_csv[0]["S_Index"], "1")
+        self.assertEqual(details_csv[0]["S_Index"], str(STARTUP_SAMPLES + 1))
         self.assertEqual(details_csv[0]["SR_Time_ms"], "20")
         self.assertEqual(details_csv[0]["Firmware"], "A15")
 
@@ -230,7 +541,11 @@ class ReportTests(unittest.TestCase):
             invalid_file = output_dir / "invalid_cleaned.txt"
             self._write_cleaned_file(
                 invalid_file,
-                [(0, ("S",)), (100, ("R",))],
+                [
+                    *((0, ()) for _ in range(STARTUP_SAMPLES)),
+                    (100, ("S",)),
+                    (100, ("R",)),
+                ],
             )
 
             rows, sequences, report_paths = analyze_files(
@@ -247,7 +562,14 @@ class ReportTests(unittest.TestCase):
 
             existing_reports = sorted(path.name for path in reports_dir.iterdir())
             no_candidate_file = output_dir / "no_candidate_cleaned.txt"
-            self._write_cleaned_file(no_candidate_file, [(100, ("S",)), (90, ("E",))])
+            self._write_cleaned_file(
+                no_candidate_file,
+                [
+                    *((0, ()) for _ in range(STARTUP_SAMPLES)),
+                    (100, ("S",)),
+                    (90, ("E",)),
+                ],
+            )
             _, sequences, no_report_paths = analyze_files(
                 [no_candidate_file],
                 output_dir=output_dir,
@@ -271,7 +593,12 @@ class ReportTests(unittest.TestCase):
             cleaned_file = output_dir / "run_cleaned.txt"
             self._write_cleaned_file(
                 cleaned_file,
-                [(100, ("S",)), (90, ("R",))],
+                [
+                    *((0, ()) for _ in range(STARTUP_SAMPLES)),
+                    (200, ()),
+                    (180, ("S",)),
+                    (100, ("R",)),
+                ],
             )
 
             _, _, report_paths = analyze_files(

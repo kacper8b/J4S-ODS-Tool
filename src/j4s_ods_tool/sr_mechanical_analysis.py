@@ -1,4 +1,5 @@
 import csv
+from bisect import bisect_right
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +16,12 @@ from .sensitivity_analysis import (
 )
 
 SAMPLE_INTERVAL_MS = 20
+STARTUP_SAMPLES = 100
 WINDOW_BEFORE_S = 40
+MIN_PEAK_DROP = 16
+PEAK_CONFIRMATION_SAMPLES = 10
+WINDOW_AFTER_R = 10
+EXCLUSION_BEFORE_OBSTACLE_S = 100
 MAX_VALID_SR_LOAD = 500
 TERMINAL_EVENTS = {"R", "E", "X"}
 METADATA_FILE = INPUT_DIR / "motor_metadata.csv"
@@ -57,7 +63,7 @@ DETAIL_FIELDS = [
 @dataclass(frozen=True)
 class SRSequence:
     file: str
-    start_index: int
+    start_index: int | None
     s_index: int
     r_index: int
     status: str
@@ -100,33 +106,93 @@ def analyze_records(
     records: list[LogRecord], file_name: str = ""
 ) -> list[SRSequence]:
     sequences = []
+    candidates: list[tuple[int, int]] = []
+    starts: list[int] = []
+    obstacle_zones: list[tuple[int, int]] = []
     active_s_index: int | None = None
-    active_start_index: int | None = None
 
     for index, record in enumerate(records):
+        if index < STARTUP_SAMPLES:
+            continue
+
         terminal_events = [event for event in record.events if event in TERMINAL_EVENTS]
         if len(terminal_events) > 1:
             raise ValueError(
                 f"Line {record.line_number}: multiple terminal events in one record"
             )
-
         if "S" in record.events:
+            starts.append(index)
             active_s_index = index
-            active_start_index = max(0, index - WINDOW_BEFORE_S)
 
         if active_s_index is None or not terminal_events:
             continue
 
         terminal_event = terminal_events[0]
         if terminal_event == "R":
-            segment = records[active_start_index : index + 1]
-            sr_time_ms = (index - active_s_index) * SAMPLE_INTERVAL_MS
+            candidates.append((active_s_index, index))
+        elif terminal_event == "E":
+            obstacle_zones.append(
+                (max(0, active_s_index - EXCLUSION_BEFORE_OBSTACLE_S), index)
+            )
+        active_s_index = None
 
-            if any(sample.ods == 0 for sample in segment):
+    candidate_position = 0
+    while candidate_position < len(candidates):
+        active_s_index, first_r_index = candidates[candidate_position]
+        index = first_r_index
+        peak_index = _find_confirmed_peak(records, active_s_index, first_r_index)
+        while True:
+            segment_end = min(len(records) - 1, index + WINDOW_AFTER_R)
+            next_start_position = bisect_right(starts, index)
+            if next_start_position == len(starts):
+                break
+            next_start = starts[next_start_position]
+            if next_start > segment_end:
+                break
+            next_candidate_position = candidate_position + 1
+            if (
+                next_candidate_position < len(candidates)
+                and candidates[next_candidate_position][0] == next_start
+            ):
+                candidate_position = next_candidate_position
+                index = candidates[candidate_position][1]
+            else:
+                segment_end = next_start - 1
+                break
+
+        measurement_start = peak_index if peak_index is not None else active_s_index
+        if any(
+            measurement_start <= zone_end and segment_end >= zone_start
+            for zone_start, zone_end in obstacle_zones
+        ):
+            candidate_position += 1
+            continue
+
+        if peak_index is None:
+            sr_time_ms = (index - active_s_index) * SAMPLE_INTERVAL_MS
+            sequences.append(
+                SRSequence(
+                    file=file_name,
+                    start_index=None,
+                    s_index=active_s_index,
+                    r_index=index,
+                    status="INVALID",
+                    reason="NO_CONFIRMED_PEAK",
+                    segment_min=None,
+                    segment_max=None,
+                    peak_load=None,
+                    sr_time_ms=sr_time_ms,
+                )
+            )
+        else:
+            segment = records[peak_index : segment_end + 1]
+            segment_values = [sample.ods for sample in segment]
+            sr_time_ms = (index - active_s_index) * SAMPLE_INTERVAL_MS
+            if any(value == 0 for value in segment_values):
                 sequences.append(
                     SRSequence(
                         file=file_name,
-                        start_index=active_start_index,
+                        start_index=peak_index,
                         s_index=active_s_index,
                         r_index=index,
                         status="INVALID",
@@ -138,7 +204,6 @@ def analyze_records(
                     )
                 )
             else:
-                segment_values = [sample.ods for sample in segment]
                 segment_min = min(segment_values)
                 segment_max = max(segment_values)
                 peak_load = segment_max - segment_min
@@ -146,7 +211,7 @@ def analyze_records(
                 sequences.append(
                     SRSequence(
                         file=file_name,
-                        start_index=active_start_index,
+                        start_index=peak_index,
                         s_index=active_s_index,
                         r_index=index,
                         status="VALID" if valid else "INVALID",
@@ -157,11 +222,30 @@ def analyze_records(
                         sr_time_ms=sr_time_ms,
                     )
                 )
-
-        active_s_index = None
-        active_start_index = None
+        candidate_position += 1
 
     return sequences
+
+
+def _find_confirmed_peak(
+    records: list[LogRecord], s_index: int, r_index: int
+) -> int | None:
+    search_start = max(STARTUP_SAMPLES, s_index - WINDOW_BEFORE_S)
+    confirmed_peaks = []
+
+    for candidate_index in range(search_start, s_index):
+        confirmation_end = min(r_index, candidate_index + PEAK_CONFIRMATION_SAMPLES)
+        candidate_value = records[candidate_index].ods
+        if any(
+            candidate_value - records[following_index].ods >= MIN_PEAK_DROP
+            for following_index in range(candidate_index + 1, confirmation_end + 1)
+        ):
+            confirmed_peaks.append(candidate_index)
+
+    if not confirmed_peaks:
+        return None
+
+    return max(confirmed_peaks, key=lambda peak_index: records[peak_index].ods)
 
 
 def _statistics_row(
@@ -416,8 +500,7 @@ def analyze_files(
     if not all_sequences:
         return summary_rows, all_sequences, None
 
-    pooled_row = _statistics_row("ALL_FILES_POOLED", all_sequences)
-    summary_rows.append(pooled_row)
+    summary_rows.append(_statistics_row("ALL_FILES_POOLED", all_sequences))
     report_paths = write_reports(
         summary_rows,
         all_sequences,

@@ -29,23 +29,49 @@ maximum ODS value from the four records immediately before `S`, and the
 measurement is `S_ref - ODS(E)`. Its report has one row per valid obstacle
 measurement.
 
-S-to-R mechanical analysis measures the peak-to-peak ODS range from up to 40
-records before `S` through the terminating `R`. Sequences terminated by `E` or
-`X` do not produce a candidate, and a newer `S` replaces an unfinished start.
-Segments containing ODS `0` or with a peak load greater than 500 are marked
-invalid. These two rejection rules remain provisional. Reported S-to-R time is
-nominally `(R index - S index) * 20 ms`; cleaned files have no timestamps to
-identify samples lost before cleaning.
+S-to-R mechanical analysis ignores the first 100 parsed records as startup,
+including their events. It searches up to 40 records strictly before `S`, never
+including startup records, for the highest peak confirmed by a drop of at least
+16 ODS units within the next 10 records, no later than its first terminal `R`.
+Equal confirmed peaks retain the first; consecutive decreases are not required.
+The measurement segment starts at that peak and extends through up to 10
+records after `R`. No rebound is required to accept a minimum.
+
+If the first following `S` occurs within 10 records after `R` and ends with
+another `R`, the sequences are merged and the window extends again from the
+last `R`. Otherwise the window stops before that `S`. A newer `S` replaces an
+unfinished start. For every S-to-E sequence, the interval from 100 records
+before its `S` through its `E`, inclusive, is protected: any overlapping
+mechanical measurement is omitted entirely, not trimmed. Obstacle measurement
+is unchanged.
+
+Load is the maximum minus the minimum ODS value across the entire extended
+segment, not just the difference between the S and R samples. These are signal
+units, not force, torque or a direct measure of obstacle-detection sensitivity.
+Measurements without a confirmed peak are invalid (`NO_CONFIRMED_PEAK`), as
+are segments containing ODS `0` (`ODS_RESET_0000`) or with a load greater than
+500 (`EXCESSIVE_LOAD`). Invalid measurements appear in details and counts but
+not in load or time statistics. The analysis parameters and rejection rules
+remain provisional. Internal zero-valued fragments do not automatically start
+another 100-record startup exclusion.
 
 The main menu offers obstacle measurement and S-to-R mechanical analysis
 separately. Both can process all cleaned files, one selected file, or one
 selected folder. Obstacle measurement writes valid measurements to CSV.
 S-to-R analysis writes a per-file and pooled summary CSV plus one combined
-sequence-details CSV when at least one candidate exists. Both report types go
+sequence-details CSV when at least one measurement remains after exclusions,
+even if all remaining measurements are invalid. Otherwise no reports are
+created. Both report types go
 to `sensitivity/output/`; names include a timestamp and gain a numeric suffix
 if needed to avoid overwriting existing files. Reported time is nominally 20 ms
-per parsed interval; cleaned logs have no timestamps to identify samples lost
-before cleaning.
+per parsed interval, from the first S to the last merged R; the pre-S peak and
+post-R window are not included in that duration. Cleaned logs have no timestamps
+to identify samples lost before cleaning. Detail indices are zero-based:
+`Start_Index` is the confirmed peak, `S_Index` the first S and `R_Index` the last R.
+
+The `ALL_FILES_POOLED` summary combines all selected configurations; it does not
+group by project, firmware, torque, type or sensitivity. There is no sensitivity
+selection. Select comparable inputs before interpreting the pooled statistics.
 
 S-to-R analysis is for upward movement (`Up`) only. Reports identify each motor
 configuration with `Project`, `Type`, `Firmware`, `Torque_Nm`, and
