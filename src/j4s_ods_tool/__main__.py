@@ -1,4 +1,9 @@
-from . import sensitivity_analysis, sr_mechanical_analysis, txt_parser
+from . import (
+    independent_slope_analysis,
+    sensitivity_analysis,
+    sr_mechanical_analysis,
+    txt_parser,
+)
 
 
 def main() -> None:
@@ -7,6 +12,7 @@ def main() -> None:
         print("1 - Parse raw motor logs")
         print("2 - Obstacle measurement")
         print("3 - S-R mechanical analysis")
+        print("4 - Independent slope analysis")
         print("0 - Exit")
         choice = input("\nChoice: ").strip()
 
@@ -16,6 +22,8 @@ def main() -> None:
             sensitivity_analysis.main()
         elif choice == "3":
             sr_mechanical_analysis.main()
+        elif choice == "4":
+            independent_slope_analysis.main()
         elif choice == "0":
             input("\nPress ENTER to exit...")
             return

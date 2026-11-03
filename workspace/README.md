@@ -95,6 +95,72 @@ current date (`YYYY-MM-DD`) to output filenames.
 The workspace folders are kept by Git, but their contents are ignored so that
 input data and generated files are not committed.
 
+## Independent slope analysis
+
+Main-menu option 4 detects downward slopes directly from the filtered signal,
+without using recorded S/R markers as slope boundaries. It reuses the source,
+file-selection and folder-metadata workflow of S-to-R analysis. Existing
+analyses and source files are unchanged.
+
+The intended scope is upward motor movement; "downward slope" refers to the
+filtered ODS signal, not motor direction. Direction is not checked from the
+input. ODS is the fourth hexadecimal field. Indices count parsed records, not
+original text lines.
+
+The first 100 parsed records are excluded. Recorded S-to-E sequences exclude
+the interval from 100 records before their S through E, inclusive. Excluded
+records and zero ODS values split the signal into separate eligible blocks.
+Slopes cannot cross those boundaries.
+
+Track a local peak (latest sample on an equal plateau) until a drop of at least
+16 units confirms a candidate. Track its minimum and join smaller drops while
+brief plateaus or rebounds remain below the ending criteria. A cumulative
+decrease of at least 4 units updates the progress reference. After updating
+progress, close on a rebound of at least 24 units from the minimum or more than
+15 intervals without significant progress. Resume peak search at that closure
+sample. The reported end is the first occurrence of the running minimum, not
+the later closure sample.
+
+After joining, accept a duration of at least 10 sample intervals and amplitude
+from 32 through 500 units, inclusive. All thresholds are provisional. Typical
+30-40-interval durations and recurrence around 120-130 intervals are not forced
+by detection. Duration is nominally `(End_Index - Start_Index) * 20 ms`; missing
+acquisitions cannot be inferred from cleaned rows.
+
+Reports are `independent_slope_summary_<timestamp>.csv` (per-file and
+`ALL_FILES_POOLED` amplitude/time statistics) and
+`independent_slope_details_<timestamp>.csv` (metadata, zero-based start/end
+indices, peak/minimum values, amplitude, time, status, reason and closure).
+Both go to `sensitivity/output/` with a numeric suffix on name collisions.
+Confirmed candidates failing duration/amplitude criteria remain in details and
+invalid counts, but not in statistics. No confirmed candidates means no reports.
+The pooled summary mixes all selected configurations.
+
+Closure distinguishes `REBOUND`, `INACTIVITY` and `BLOCK_BOUNDARY` (excluded
+data, zero ODS or end of file). A boundary-closed slope may still meet acceptance
+criteria, but its physical ending is not confirmed; inspect these candidates
+before interpreting them. Valid boundary-closed slopes currently contribute
+to summary statistics; there is no separate boundary-statistics group. The
+console reports the count of all boundary-closed candidates.
+
+The 500-unit limit is on peak-to-minimum amplitude, not the absolute peak.
+Length is measured in intervals: 10 intervals span 11 record positions.
+Equal minima keep their first occurrence. New minimum/progress updates happen
+before closure checks, and rebound takes precedence over inactivity. Small
+fragments are joined only while the candidate remains active; closed candidates
+are not merged retroactively. Internal zero values do not trigger another
+100-record startup exclusion.
+
+For example, a 300-unit decrease over 30 intervals is valid (600 ms); a
+100-unit decrease over 9 intervals is too short, and a 501-unit decrease is
+too large. A rebound of exactly 24 units closes an active candidate. Recorded
+S/R markers cannot independently start or close one.
+
+Independent duration measures peak-to-minimum; S-to-R duration measures first
+S-to-last R, so these times are not interchangeable. Compare configurations
+without mixing project, firmware or torque. Signal amplitudes are not physical
+force or a direct percentage measure of obstacle-detection sensitivity.
+
 ## Previous folder layout
 
 The old workspace-root `input/`, `output/`, `rejected/` and `reports/` folders
