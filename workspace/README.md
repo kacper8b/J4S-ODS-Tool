@@ -97,6 +97,14 @@ without using recorded S/R markers as slope boundaries. It reuses the source,
 file-selection and folder-metadata workflow of S-to-R analysis. Existing
 analyses and source files are unchanged.
 
+Main-menu option 5 configures the nine Independent Slope Analysis detection
+parameters. The settings are shared across selected files and motor
+configurations, persist between runs in
+`sensitivity/independent_slope_parameters.json`, and are ignored by Git.
+Choose whether to change the current values or restore defaults. If no settings
+file exists, the documented defaults are used. Invalid settings are reported
+instead of silently replaced. The confirmed 20 ms sample interval is fixed.
+
 The intended scope is upward motor movement; "downward slope" refers to the
 filtered ODS signal, not motor direction. Direction is not checked from the
 input. ODS is the fourth hexadecimal field. Indices count parsed records, not
@@ -108,7 +116,7 @@ records and zero ODS values split the signal into separate eligible blocks.
 Slopes cannot cross those boundaries.
 
 Track a local peak (latest sample on an equal plateau) until a drop of at least
-16 units confirms a candidate. Track its minimum and join smaller drops while
+32 units confirms a candidate. Track its minimum and join smaller drops while
 brief plateaus or rebounds remain below the ending criteria. A cumulative
 decrease of at least 4 units updates the progress reference. After updating
 progress, close on a rebound of at least 24 units from the minimum or more than
@@ -155,6 +163,22 @@ Independent duration measures peak-to-minimum; S-to-R duration measures first
 S-to-last R, so these times are not interchangeable. Compare configurations
 without mixing project, firmware or torque. Signal amplitudes are not physical
 force or a direct percentage measure of obstacle-detection sensitivity.
+
+## Torque vs Ucapa
+
+Main-menu option 6 compares the mean value of the fourth cleaned column
+(`wUCapFiltValue`) between two selected folders. Choose one source
+(`parser/output/` or `sensitivity/input/`), then select two different displayed
+top-level folders; each folder includes its nested subfolders. The same
+start/end interval in seconds is applied from the beginning of every file.
+Sample times are nominally `record index * 20 ms`, with both interval endpoints
+included. Each folder mean pools all matching records across its files, giving
+every record equal weight.
+
+The console shows both means and the difference (second folder minus first) to
+two decimal places. No CSV report is created. If either folder has no records
+in the interval, the comparison is not calculated. Cleaned logs contain no
+timestamps, so missing acquisitions cannot be identified.
 
 ## Previous folder layout
 

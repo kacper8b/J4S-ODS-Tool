@@ -2,6 +2,7 @@ from . import (
     independent_slope_analysis,
     sensitivity_analysis,
     sr_mechanical_analysis,
+    torque_ucapa_analysis,
     txt_parser,
 )
 
@@ -13,6 +14,8 @@ def main() -> None:
         print("2 - Obstacle measurement")
         print("3 - S-R mechanical analysis")
         print("4 - Independent slope analysis")
+        print("5 - Independent slope parameters")
+        print("6 - Torque vs Ucapa")
         print("0 - Exit")
         choice = input("\nChoice: ").strip()
 
@@ -24,6 +27,10 @@ def main() -> None:
             sr_mechanical_analysis.main()
         elif choice == "4":
             independent_slope_analysis.main()
+        elif choice == "5":
+            independent_slope_analysis.configure_parameters()
+        elif choice == "6":
+            torque_ucapa_analysis.main()
         elif choice == "0":
             input("\nPress ENTER to exit...")
             return

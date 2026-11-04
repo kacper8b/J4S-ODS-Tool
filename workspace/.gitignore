@@ -7,5 +7,6 @@ parser/rejected/*
 sensitivity/input/*
 !sensitivity/input/.gitkeep
 !sensitivity/input/motor_metadata.csv
+sensitivity/independent_slope_parameters.json
 sensitivity/output/*
 !sensitivity/output/.gitkeep
